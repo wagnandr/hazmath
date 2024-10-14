@@ -88,7 +88,7 @@ int main (int argc, char* argv[])
     creategrid_fread(gfid,mesh_type,&mesh);
     fclose(gfid);
   } else {
-    // Use HAZMATH built in functions for a uniform mesh in 2D or 3D
+    // Use HAZMATH built in functions for a uniform mesh in 2D or 3D    
     mesh=make_uniform_mesh(dim,mesh_ref_levels,mesh_ref_type,set_bndry_codes);
   }
 
@@ -134,12 +134,8 @@ int main (int argc, char* argv[])
     dump_fespace(&FE,varu,dir);
 
     // Mesh
-    char* namevtk = strdup("output/mesh.vtu");
+    char* namevtk = "output/mesh.vtu";
     dump_mesh_vtk(namevtk,&mesh);
-    char* namemesh = strdup("output/mesh.haz");
-    dump_mesh_haz(namemesh,&mesh);
-    free(namemesh);
-    free(namevtk);
   }
 
   clock_t clk_mesh_end = clock(); // End of timing for mesh and FE setup
@@ -335,7 +331,16 @@ int main (int argc, char* argv[])
 
     // Use AMG as iterative solver
     if (linear_itparam.linear_itsolver_type == SOLVER_AMG){
+      printf("Start calling linear solver for A:\n");
       solver_flag = linear_solver_amg(&A, &b, &u, &amgparam);
+      printf("Start calling linear solver for A^T:\n");
+      dCSRmat AT; 
+      dcsr_trans(&A, &AT);
+      solver_flag = linear_solver_amg(&AT, &b, &u, &amgparam);
+      printf("Start calling linear solver for (A^T)^T:\n");
+      dCSRmat ATT;
+      dcsr_trans(&AT, &ATT);
+      solver_flag = linear_solver_amg(&AT, &b, &u, &amgparam);
     } else { // Use Krylov Iterative Solver
       // Determine Preconditioner
       // Diagonal preconditioner
@@ -460,21 +465,22 @@ int main (int argc, char* argv[])
   /*******************************************************************/
 
   /**************** Print Results or Dump Results ********************/
-  char solout[128];
-  strncpy(solout,inparam.output_dir,128);
-  strcat(solout,"sol.vtu");
+  if (inparam.output_dir != NULL) {
+    char solout[128];
+    strncpy(solout,inparam.output_dir,128);
+    strcat(solout,"sol.vtu");
 
-  dump_sol_vtk(solout,"u",&mesh,&FE,u.val);
+    dump_sol_vtk(solout,"u",&mesh,&FE,u.val);
 
-  dvector exact_sol = dvec_create(FE.ndof);
-  if(dim==1) {
-    if(FE.FEtype>=0 && FE.FEtype<10) { // PX
-      FE_Evaluate(exact_sol.val,exactsol_1D_PX,&FE,&mesh,0.0);
-    } else {
-      status = ERROR_FE_TYPE;
-      check_error(status, __FUNCTION__);
-    }
-  } else if(dim==2) {
+    dvector exact_sol = dvec_create(FE.ndof);
+    if(dim==1) {
+      if(FE.FEtype>=0 && FE.FEtype<10) { // PX
+        FE_Evaluate(exact_sol.val,exactsol_1D_PX,&FE,&mesh,0.0);
+      } else {
+        status = ERROR_FE_TYPE;
+        check_error(status, __FUNCTION__);
+      }
+    } else if(dim==2) {
       if(FE.FEtype>=0 && FE.FEtype<10) { // PX
         FE_Evaluate(exact_sol.val,exactsol_2D_PX,&FE,&mesh,0.0);
       } else if(FE.FEtype==20) { // Nedelec
@@ -485,29 +491,29 @@ int main (int argc, char* argv[])
         status = ERROR_FE_TYPE;
         check_error(status, __FUNCTION__);
       }
-  } else if(dim==3) {
-    if(FE.FEtype>=0 && FE.FEtype<10) { // PX
-      FE_Evaluate(exact_sol.val,exactsol_3D_PX,&FE,&mesh,0.0);
-    } else if(FE.FEtype==20) { // Nedelec
-      FE_Evaluate(exact_sol.val,exactsol_3D_Ned,&FE,&mesh,0.0);
-    } else if(FE.FEtype==30) { // RT
-      FE_Evaluate(exact_sol.val,exactsol_3D_RT,&FE,&mesh,0.0);
+    } else if(dim==3) {
+      if(FE.FEtype>=0 && FE.FEtype<10) { // PX
+        FE_Evaluate(exact_sol.val,exactsol_3D_PX,&FE,&mesh,0.0);
+      } else if(FE.FEtype==20) { // Nedelec
+        FE_Evaluate(exact_sol.val,exactsol_3D_Ned,&FE,&mesh,0.0);
+      } else if(FE.FEtype==30) { // RT
+        FE_Evaluate(exact_sol.val,exactsol_3D_RT,&FE,&mesh,0.0);
+      } else {
+        status = ERROR_FE_TYPE;
+        check_error(status, __FUNCTION__);
+      }
     } else {
-      status = ERROR_FE_TYPE;
-      check_error(status, __FUNCTION__);
+        status = ERROR_DIM;
+        check_error(status, __FUNCTION__);
     }
-  } else {
-      status = ERROR_DIM;
-      check_error(status, __FUNCTION__);
+
+    char exactout[128];
+    strncpy(exactout,inparam.output_dir,128);
+    strcat(exactout,"exact.vtu");
+    dump_sol_vtk(exactout,"ut",&mesh,&FE,exact_sol.val);
+
+    dvec_free(&exact_sol);
   }
-
-  char exactout[128];
-  strncpy(exactout,inparam.output_dir,128);
-  strcat(exactout,"exact.vtu");
-  dump_sol_vtk(exactout,"ut",&mesh,&FE,exact_sol.val);
-
-  dvec_free(&exact_sol);
-
   /*******************************************************************/
 
   /******** Free All the Arrays **************************************/
