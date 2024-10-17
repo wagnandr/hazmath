@@ -460,6 +460,8 @@ void param_input (const char *filenm,		\
                 inparam->AMG_type = MUA_AMG;
             else if ((strcmp(buffer,"MSA")==0)||(strcmp(buffer,"msa")==0))
                 inparam->AMG_type = MSA_AMG;
+            else if ((strcmp(buffer,"NS")==0)||(strcmp(buffer,"ns")==0))
+                inparam->AMG_type =  NS_AMG;
             else
             { status = ERROR_INPUT_PAR; break; }
             fgets(buffer,maxb,fp); // skip rest of line

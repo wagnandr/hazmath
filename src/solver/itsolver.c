@@ -571,6 +571,11 @@ INT linear_solver_amg(dCSRmat *A,
             status = amg_setup_sa(mgl, param);
         break;
 
+        case NS_AMG: // Nonsymmetric AMG setup
+            if ( prtlvl > PRINT_NONE ) printf("\n Calling NS AMG ...\n");
+            status = amg_setup_ns(mgl, param);
+        break;
+
         default: // Unsmoothed Aggregation AMG setup
             if ( prtlvl > PRINT_NONE ) printf("\n Calling UA AMG ...\n");
             status = amg_setup_ua(mgl, param);

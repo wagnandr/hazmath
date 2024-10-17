@@ -31,6 +31,7 @@ static void form_tentative_p_bsr(const ivector *vertices,dBSRmat *tentp, const A
 static SHORT amg_setup_unsmoothP_unsmoothR_bsr(AMG_data_bsr *mgl, AMG_param *param);
 static SHORT amg_setup_general_bdcsr(AMG_data_bdcsr *mgl, AMG_param *param);
 static SHORT amg_setup_bdcsr_metric(AMG_data_bdcsr *mgl, AMG_param *param);
+static SHORT amg_setup_ns_smoothP_smoothR(AMG_data *mgl, AMG_param *param);
 
 /*---------------------------------*/
 /*--      Public Functions       --*/
@@ -78,6 +79,15 @@ SHORT amg_setup_sa (AMG_data *mgl,
 {
 
     SHORT status = amg_setup_smoothP_smoothR(mgl, param);
+
+    return status;
+}
+
+SHORT amg_setup_ns (AMG_data *mgl,
+                    AMG_param *param)
+{
+
+    SHORT status = amg_setup_ns_smoothP_smoothR(mgl, param);
 
     return status;
 }
@@ -1442,6 +1452,196 @@ static SHORT amg_setup_unsmoothP_unsmoothR(AMG_data *mgl,
     return status;
 }
 
+static bool amg_setup_smoothP(dCSRmat* A, dCSRmat* P, AMG_param *param, REAL **near_kernel_basis, SHORT lvl)
+{
+    SHORT status = SUCCESS;
+    INT num_aggs = 0;
+
+    // stores the information of the strongly coupled neighborhoods
+    dCSRmat Neighbor = {};
+    // stores the information of the tentative prolongations
+    dCSRmat tentative_p = {}; 
+    ivector vertices = {}; 
+
+    /*-- Aggregation --*/
+    switch ( param->aggregation_type ) {
+
+        case VMB: // VMB aggregation
+            status = aggregation_vmb(A, &vertices, param,
+                                        &Neighbor, &num_aggs,lvl);
+            break;
+
+        case HEC: // Heavy edge coarsening aggregation
+            srand(0);
+            status = aggregation_hec(A, &vertices, param,
+                                        &Neighbor, &num_aggs,lvl);
+            break;
+
+        default: // wrong aggregation type
+            status = ERROR_AMG_AGG_TYPE;
+            check_error(status, __FUNCTION__);
+            break;
+    }
+
+    // Check 1: Did coarsening step succeed?
+    if ( status < 0 ) {
+        // When error happens, stop at the current multigrid level!
+        // if ( param->print_level > PRINT_MIN ) {
+        { 
+            printf("### HAZMATH WARNING: Forming aggregates on level-%lld failed!\n", (long long )lvl);
+        }
+        dcsr_free(&Neighbor);
+        ivec_free(&vertices);
+        return false;
+    }
+
+    /*-- Form Prolongation --*/
+    form_tentative_p(&vertices, &tentative_p, near_kernel_basis, lvl+1, num_aggs);
+
+    /* -- Form smoothed prolongation -- */
+    smooth_aggregation_p(A, &tentative_p, P, param, lvl+1, &Neighbor);
+
+    dcsr_free(&Neighbor);
+    dcsr_free(&tentative_p);
+    ivec_free(&vertices);
+
+    // Check 2: Is coarse sparse too small?
+    if ( P->col < MIN_CDOF ) 
+        return false; 
+
+    return true;
+}
+
+static SHORT amg_setup_ns_smoothP_smoothR(AMG_data *mgl,
+                                          AMG_param *param)
+{
+    // local variables
+    const SHORT prtlvl     = param->print_level;
+    const SHORT cycle_type = param->cycle_type;
+    const SHORT csolver    = param->coarse_solver;
+    const SHORT min_cdof   = MAX(param->coarse_dof,1);
+    const INT   m          = mgl[0].A.row;
+    REAL strong_coupled_bak = param->strong_coupled;
+    //INT counter = 0;
+
+    // local variables
+    SHORT         max_levels = param->max_levels, lvl = 0, status = SUCCESS;
+    INT           i;
+    REAL          setup_start, setup_end;
+    Schwarz_param swzparam;
+
+    get_time(&setup_start);
+
+    mgl[0].near_kernel_dim   = 1;
+    mgl[0].near_kernel_basis = (REAL **)calloc(mgl->near_kernel_dim,sizeof(REAL*));
+
+    for ( i = 0; i < mgl->near_kernel_dim; ++i ) {
+        mgl[0].near_kernel_basis[i] = (REAL *)calloc(m,sizeof(REAL));
+        array_set(m, mgl[0].near_kernel_basis[i], 1.0);
+    }
+
+    // Initialize Schwarz parameters
+    mgl->Schwarz_levels = param->Schwarz_levels;
+    if ( param->Schwarz_levels > 0 ) {
+        swzparam.Schwarz_mmsize = param->Schwarz_mmsize;
+        swzparam.Schwarz_maxlvl = param->Schwarz_maxlvl;
+        swzparam.Schwarz_type   = param->Schwarz_type;
+        swzparam.Schwarz_blksolver = param->Schwarz_blksolver;
+    }
+
+    // Initialize AMLI coefficients
+    if ( cycle_type == AMLI_CYCLE ) {
+        const INT amlideg = param->amli_degree;
+        param->amli_coef = (REAL *)calloc(amlideg+1,sizeof(REAL));
+        REAL lambda_max = 2.0, lambda_min = lambda_max/4;
+        amg_amli_coef(lambda_max, lambda_min, amlideg, param->amli_coef);
+    }
+
+    /*----------------------------*/
+    /*--- checking aggregation ---*/
+    /*----------------------------*/
+    // Main AMG setup loop
+    while ( (mgl[lvl].A.row > min_cdof) && (lvl < max_levels-1) ) {
+        /*-- Setup Schwarz smoother if necessary */
+        if ( lvl < param->Schwarz_levels ) {
+          mgl[lvl].Schwarz.A=dcsr_sympat(&mgl[lvl].A);
+          Schwarz_setup(&mgl[lvl].Schwarz, &swzparam,NULL);
+          //printf("Schwarz setup done!\n");
+        }
+
+        // Construct prolongation matrix P for A 
+        /*-- Form prolongation --*/
+        if(!amg_setup_smoothP(&mgl[lvl].A, &mgl[lvl].P, param, mgl[0].near_kernel_basis, lvl))
+            break;
+
+        /*-- Form restriction --*/
+        dCSRmat AT = {}, PT = {}; 
+        dcsr_trans(&mgl[lvl].A, &AT);
+        if(!amg_setup_smoothP(&AT, &PT, param, mgl[0].near_kernel_basis, lvl))
+            break;
+        dcsr_trans(&PT, &mgl[lvl].R);
+
+        dcsr_free(&PT);
+        dcsr_free(&AT);
+
+        /*-- Form coarse level stiffness matrix --*/
+        dcsr_rap(&mgl[lvl].R, &mgl[lvl].A, &mgl[lvl].P,
+                               &mgl[lvl+1].A);
+
+        ++lvl;
+
+    }
+
+    // Setup coarse level systems for direct solvers
+    switch (csolver) {
+
+      //#if WITH_SUITESPARSE
+    case SOLVER_UMFPACK: {
+      // Need to sort the matrix A for UMFPACK to work
+      dCSRmat Ac_tran;
+      dcsr_trans(&mgl[lvl].A, &Ac_tran);
+      // It is equivalent to do transpose and then sort
+      //     fasp_dcsr_trans(&mgl[lvl].A, &Ac_tran);
+      //     fasp_dcsr_sort(&Ac_tran);
+      dcsr_cp(&Ac_tran, &mgl[lvl].A);
+      dcsr_free(&Ac_tran);
+      mgl[lvl].Numeric = hazmath_factorize(&mgl[lvl].A, 0);
+      break;
+    }
+	    //#endif
+        default:
+            // Do nothing!
+            break;
+    }
+
+    // setup total level number and current level
+    mgl[0].num_levels = max_levels = lvl+1;
+    mgl[0].w          = dvec_create(m);
+
+    for ( lvl = 1; lvl < max_levels; ++lvl) {
+        INT mm = mgl[lvl].A.row;
+        mgl[lvl].num_levels = max_levels;
+        mgl[lvl].b          = dvec_create(mm);
+        mgl[lvl].x          = dvec_create(mm);
+
+        mgl[lvl].cycle_type     = cycle_type; // initialize cycle type!
+
+        if ( cycle_type == NL_AMLI_CYCLE )
+            mgl[lvl].w = dvec_create(3*mm);
+        else
+            mgl[lvl].w = dvec_create(2*mm);
+    }
+
+    if ( prtlvl > PRINT_NONE ) {
+        get_time(&setup_end);
+        print_amg_complexity(mgl,prtlvl);
+        print_cputime("Smoothed aggregation setup", setup_end - setup_start);
+    }
+
+    param->strong_coupled = strong_coupled_bak;
+
+    return status;
+}
 
 /***********************************************************************************************/
 /**

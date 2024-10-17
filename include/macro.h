@@ -158,6 +158,7 @@
 #define C_AMG                   3  /**< classical AMG */
 #define MUA_AMG                 10 /**< Metric Unsmoothed aggregation AMG for interface problem */
 #define MSA_AMG                 11 /**< Metric Smoothed aggregation AMG for interface problem */
+#define NS_AMG                  20 /**< nonsymmetric AMG */
 
 
 /**
