@@ -616,6 +616,7 @@ INT linear_solver_amg(dCSRmat *A,
 
     // clean-up memory
     amg_data_free(mgl, param);
+    free(mgl);
 
     // print out CPU time if needed
     if ( prtlvl > PRINT_NONE ) {
